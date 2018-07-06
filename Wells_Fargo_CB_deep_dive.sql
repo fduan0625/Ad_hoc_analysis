@@ -1,4 +1,4 @@
----- start from 1/1/2018
+---- start from 3/1/2018
 with chargeback_dim as 
 (
    select
