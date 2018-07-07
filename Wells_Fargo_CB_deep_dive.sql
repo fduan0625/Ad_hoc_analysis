@@ -1,4 +1,4 @@
----- start from 3/1/2018
+---- CHARGEBACKS start from 3/1/2018
 with chargeback_dim as 
 (
    select
@@ -266,3 +266,93 @@ on
     and cb.bin = pmt.bin
 where pmt.issuer_institution_desc_grp in ('BANK OF AMERICA','WELLS FARGO')
 );
+
+                                                           
+------ Refund start from 2018-03-01
+                                                           
+with rr as(
+select  nf_datetrunc('month', f.event_utc_date) as event_utc_month
+        ,g.estaff_subregion_desc
+        ,g.country_desc
+        ,g.country_iso_code
+        ,coalesce(ig.grouped_pmt_institution_desc, 'UNKNOWN') as issuer_desc_grouped
+        ,coalesce(pmmd.dse_pmt_method, case when f.degenerate_values_map['mop_type'] = 'CC' then 'Card' else 'UNKNOWN' end) as pmt_method
+        ,coalesce(pmmd.pmt_type_desc, 'UNKNOWN') as pmt_type
+        ,coalesce(pmmd.affiliation, 'UNKNOWN') as pmt_brand
+        ,coalesce(pmmd.clear_bin, 'UNKNOWN') as bin
+        -- ,f.degenerate_values_map['chargeback_status'] as response_code_grouped  -- Can be 'NEW' or 'ERROR'
+        -- ,case
+        --       when pmmd.dse_pmt_method is null then 'UNKNOWN'
+        --       when pmmd.dse_pmt_method <> 'Card' then 'Not Applicable'
+        --       when pmmd.issuer_country_code is null then 'UNKNOWN'
+        --       when pmmd.dse_pmt_method = '--' or pmmd.issuer_country_code = '--' then 'UNKNOWN'
+        --       when pmmd.issuer_country_code = f.country_code then 'Local'
+        --       else 'Foreign'
+        --   end as foreign_local_card
+        -- ,f.event_region_date as region_date
+        ,count(distinct natural_key_map['req_proc_ref_id']) as refund_cnt
+
+  from dse.pmt_events_hourly_f f
+    left outer join dse.pmt_mop_metadata_d pmmd
+      on f.dimension_sk_map['pmt_mop_metadata_sk'] = pmmd.pmt_mop_metadata_sk
+    left outer join dse.pmt_institution_v2_d inst
+      on pmmd.pmt_institution_sk = inst.pmt_institution_sk
+    left outer join dse.pmt_institution_grouped_d ig
+      on inst.pmt_institution_desc = ig.pmt_institution_desc
+    left outer join dse.geo_country_d g
+      on f.country_code = g.country_iso_code
+  where 
+    event_utc_date >=${event_start_date}
+    and degenerate_values_map['txn_type']='REFUND'
+    and degenerate_values_map['txn_status']='APPROVED'
+    and pmt_event_type='payment_transaction'
+  -- and   coalesce(pmmd.dse_pmt_method, case when f.degenerate_values_map['mop_type'] = 'CC' then 'Card' else 'UNKNOWN' end) = 'Card'
+  -- and cast(degenerate_values_map['billing_period']as int)<=1
+  group by 1,2,3,4,5,6,7,8,9
+),
+
+
+bill2 as
+( select 
+    nf_datetrunc('month', event_utc_date)  as  event_utc_month  
+    , estaff_subregion_desc
+    , country_desc
+    , country_iso_code
+    ,issuer_institution_desc_grp
+    ,pmt_method
+    ,pmt_type
+    ,pmt_brand
+    ,bin
+    ,sum(approved_cnt)approved_cnt
+    from dse.pmt_renewal_txn_agg
+    where event_utc_date >= ${event_start_date}
+    group by 1,2,3,4,5,6,7,8,9
+)
+
+
+
+select 
+     b.event_utc_month  
+    ,b.estaff_subregion_desc
+    ,b.country_desc
+    ,b.country_iso_code
+    ,b.issuer_institution_desc_grp
+    ,b.pmt_method
+    ,b.pmt_type
+    ,b.pmt_brand
+    ,b.bin
+    ,b.approved_cnt
+    ,coalesce(rr.refund_cnt,0) refund_cnt
+
+from bill2 b
+left join rr
+  on b.event_utc_month=rr.event_utc_month
+  and b.estaff_subregion_desc = rr.estaff_subregion_desc
+  and b.country_desc = rr.country_desc
+  and b.country_iso_code = rr.country_iso_code
+  and b.issuer_institution_desc_grp=rr.issuer_desc_grouped
+  and b.pmt_method=rr.pmt_method
+  and b.pmt_type=rr.pmt_type
+  and b.pmt_brand=rr.pmt_brand
+  and b.bin=rr.bin
+  where b.issuer_institution_desc_grp in ('BANK OF AMERICA','WELLS FARGO');
